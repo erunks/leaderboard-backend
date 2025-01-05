@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.IdentityModel.Tokens.Jwt;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -10,20 +9,21 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using LeaderboardBackend;
 using LeaderboardBackend.Authorization;
+using LeaderboardBackend.Filters;
 using LeaderboardBackend.Models.Entities;
 using LeaderboardBackend.Services;
-using LeaderboardBackend.Swagger;
-using MailKit.Net.Smtp;
+using MicroElements.Swashbuckle.NodaTime;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.FeatureManagement;
+using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using NodaTime;
+using NodaTime.Serialization.SystemTextJson;
 using Npgsql;
 
 #region WebApplicationBuilder
@@ -34,7 +34,7 @@ if (!builder.Environment.IsProduction())
 {
     AppConfig? appConfigWithoutDotEnv = builder.Configuration.Get<AppConfig>();
     EnvConfigurationSource dotEnvSource =
-        new(new string[] { appConfigWithoutDotEnv?.EnvPath ?? ".env" }, LoadOptions.NoClobber());
+        new([appConfigWithoutDotEnv?.EnvPath ?? ".env"], LoadOptions.NoClobber());
     builder.Configuration.Sources.Insert(0, dotEnvSource); // all other configuration providers override .env
 }
 
@@ -48,8 +48,8 @@ builder.Services
     .ValidateOnStart();
 
 builder.Services
-    .AddOptions<EmailSenderConfig>()
-    .BindConfiguration(EmailSenderConfig.KEY)
+    .AddOptions<BrevoOptions>()
+    .BindConfiguration(BrevoOptions.KEY)
     .ValidateFluentValidation()
     .ValidateOnStart();
 
@@ -86,6 +86,7 @@ builder.Services.AddDbContext<ApplicationContext>(
 
             opt.UseNpgsql(connectionBuilder.ConnectionString, o => o.UseNodaTime());
             opt.UseSnakeCaseNamingConvention();
+            opt.UseValidationCheckConstraints();
         }
         else
         {
@@ -104,34 +105,29 @@ builder.Services.AddScoped<ICategoryService, CategoryService>();
 builder.Services.AddScoped<IAccountConfirmationService, AccountConfirmationService>();
 builder.Services.AddScoped<IAccountRecoveryService, AccountRecoveryService>();
 builder.Services.AddScoped<IRunService, RunService>();
-builder.Services.AddSingleton<IEmailSender, EmailSender>();
-builder.Services.AddSingleton<ISmtpClient>(_ => new SmtpClient() { Timeout = 3000 });
+builder.Services.AddSingleton<IEmailSender, BrevoService>();
 builder.Services.AddSingleton<IClock>(_ => SystemClock.Instance);
 
 AppConfig? appConfig = builder.Configuration.Get<AppConfig>();
 if (!string.IsNullOrWhiteSpace(appConfig?.AllowedOrigins))
 {
-    builder.Services.AddCors(options =>
-    {
-        options.AddDefaultPolicy(
+    builder.Services.AddCors(options => options.AddDefaultPolicy(
             policy =>
                 policy
                     .WithOrigins(appConfig.ParseAllowedOrigins())
                     .SetIsOriginAllowedToAllowWildcardSubdomains()
                     .AllowAnyMethod()
                     .AllowAnyHeader()
-        );
-    });
+        ));
 }
 else if (builder.Environment.IsDevelopment())
 {
-    builder.Services.AddCors(options =>
-    {
-        options.AddDefaultPolicy(
+    builder.Services.AddCors(options => options.AddDefaultPolicy(
             policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()
-        );
-    });
+        ));
 }
+
+JsonSerializerOptions jsonSerializerOptions = new();
 
 // Add controllers to the container.
 builder.Services
@@ -140,12 +136,16 @@ builder.Services
         // Enforces JSON output and causes OpenAPI UI to correctly show that we return JSON.
         opt.OutputFormatters.RemoveType<StringOutputFormatter>();
         opt.ModelBinderProviders.Insert(0, new UrlSafeBase64GuidBinderProvider());
+        opt.Filters.AddService<ValidationFilter>();
     })
+    .ConfigureApiBehaviorOptions(opt => opt.SuppressModelStateInvalidFilter = true)
     .AddJsonOptions(opt =>
     {
         opt.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
         opt.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
         opt.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+        opt.JsonSerializerOptions.ConfigureForNodaTime(DateTimeZoneProviders.Tzdb);
+        jsonSerializerOptions = opt.JsonSerializerOptions;
     });
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
@@ -157,6 +157,7 @@ builder.Services.AddSwaggerGen(c =>
     // Enable adding XML comments to controllers to populate Swagger UI
     string xmlFilename = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
     c.IncludeXmlComments(Path.Combine(AppContext.BaseDirectory, xmlFilename));
+    c.EnableAnnotations(true, true);
 
     c.AddSecurityDefinition(
         "Bearer",
@@ -188,8 +189,12 @@ builder.Services.AddSwaggerGen(c =>
     );
 
     c.SupportNonNullableReferenceTypes();
-    c.SchemaFilter<RequiredNotNullableSchemaFilter>();
     c.MapType<Guid>(() => new OpenApiSchema { Type = "string", Pattern = "^[a-zA-Z0-9-_]{22}$" });
+    c.ConfigureForNodaTimeWithSystemTextJson(jsonSerializerOptions, null, null, true, new(DateTimeZoneProviders.Tzdb)
+    {
+        Instant = Instant.FromUtc(1984, 1, 1, 0, 0),
+        ZonedDateTime = ZonedDateTime.FromDateTimeOffset(new(new DateTime(2000, 1, 1)))
+    });
 });
 
 // Configure JWT Authentication.
@@ -217,72 +222,37 @@ builder.Services
             }
     );
 
-JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 
-// Configure authorisation.
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy(
-        UserTypes.ADMINISTRATOR,
-        policy =>
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy(UserTypes.ADMINISTRATOR, policy =>
         {
             policy.AuthenticationSchemes.Add(JwtBearerDefaults.AuthenticationScheme);
             policy.RequireAuthenticatedUser();
             policy.Requirements.Add(new UserTypeRequirement(UserTypes.ADMINISTRATOR));
         }
-    );
-    options.AddPolicy(
-        UserTypes.MODERATOR,
-        policy =>
+)
+    .AddPolicy(UserTypes.MODERATOR, policy =>
         {
             policy.AuthenticationSchemes.Add(JwtBearerDefaults.AuthenticationScheme);
             policy.RequireAuthenticatedUser();
             policy.Requirements.Add(new UserTypeRequirement(UserTypes.MODERATOR));
         }
-    );
-
-    // Handles empty [Authorize] attributes
-    options.DefaultPolicy = new AuthorizationPolicyBuilder()
-        .AddAuthenticationSchemes(new[] { JwtBearerDefaults.AuthenticationScheme })
+)
+    .SetDefaultPolicy(new AuthorizationPolicyBuilder()
+        .AddAuthenticationSchemes(JwtBearerDefaults.AuthenticationScheme)
         .RequireAuthenticatedUser()
         .AddRequirements(new[] { new UserTypeRequirement(UserTypes.USER) })
-        .Build();
-
-    options.FallbackPolicy = new AuthorizationPolicyBuilder()
-        .AddAuthenticationSchemes(new[] { JwtBearerDefaults.AuthenticationScheme })
-        .RequireAuthenticatedUser()
-        .Build();
-});
+        .Build());
 
 builder.Services.AddSingleton<IValidatorInterceptor, LeaderboardBackend.Models.Validation.UseErrorCodeInterceptor>();
-builder.Services.AddFluentValidationAutoValidation(c =>
-{
-    c.DisableDataAnnotationsValidation = true;
-});
-builder.Services.Configure<ApiBehaviorOptions>(options =>
-{
-    options.InvalidModelStateResponseFactory = context =>
-    {
-        ValidationProblemDetails problemDetails = new(context.ModelState);
-
-        // As of this writing, we want our custom validation rules to return with
-        // a 422, while keeping 400 for all other input syntax errors.
-        // For JSON syntax errors that we don't override, their keys will be the field
-        // path that has the error, which always starts with "$", denoting the object
-        // root. We check for that, and return the error code accordingly. - zysim
-        if (problemDetails.Errors.Keys.Any(x => x.StartsWith("$")))
-        {
-            return new BadRequestObjectResult(problemDetails);
-        }
-
-        return new UnprocessableEntityObjectResult(problemDetails);
-    };
-});
+builder.Services.AddFluentValidationAutoValidation(c => c.DisableDataAnnotationsValidation = true);
 
 // Can't use AddSingleton here since we call the DB in the Handler
 builder.Services.AddScoped<IAuthorizationHandler, UserTypeAuthorizationHandler>();
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, MiddlewareResultHandler>();
+builder.Services.AddSingleton<ValidationFilter>();
 
 // Enable feature management.
 builder.Services.AddFeatureManagement(builder.Configuration.GetSection("Feature"));
@@ -290,6 +260,9 @@ builder.Services.AddFeatureManagement(builder.Configuration.GetSection("Feature"
 
 #region WebApplication
 WebApplication app = builder.Build();
+
+BrevoOptions brevoOptions = app.Services.GetRequiredService<IOptionsMonitor<BrevoOptions>>().CurrentValue;
+brevo_csharp.Client.Configuration.Default.AddApiKey("api-key", brevoOptions.ApiKey);
 
 // Configure the HTTP request pipeline.
 app.UseSwagger();

@@ -1,8 +1,9 @@
 using System;
 using System.Threading.Tasks;
+using LeaderboardBackend.Models;
+using LeaderboardBackend.Models.Entities;
 using LeaderboardBackend.Models.Requests;
 using LeaderboardBackend.Models.ViewModels;
-using LeaderboardBackend.Test.Lib;
 using LeaderboardBackend.Test.TestApi;
 using LeaderboardBackend.Test.TestApi.Extensions;
 using NodaTime;
@@ -33,27 +34,30 @@ namespace LeaderboardBackend.Test
             _jwt = (await _apiClient.LoginAdminUser()).Token;
 
             LeaderboardViewModel createdLeaderboard = await _apiClient.Post<LeaderboardViewModel>(
-                "/api/leaderboards",
+                "/leaderboards/create",
                 new()
                 {
                     Body = new CreateLeaderboardRequest()
                     {
-                        Name = Generators.GenerateRandomString(),
-                        Slug = Generators.GenerateRandomString(),
+                        Name = "Super Mario 64",
+                        Slug = "super_mario_64",
                     },
                     Jwt = _jwt,
                 }
             );
 
             CategoryViewModel createdCategory = await _apiClient.Post<CategoryViewModel>(
-                "/api/categories",
+                "/categories/create",
                 new()
                 {
                     Body = new CreateCategoryRequest()
                     {
-                        Name = Generators.GenerateRandomString(),
-                        Slug = Generators.GenerateRandomString(),
+                        Name = "120 Stars",
+                        Slug = "120_stars",
                         LeaderboardId = createdLeaderboard.Id,
+                        Info = null,
+                        SortDirection = SortDirection.Ascending,
+                        Type = RunType.Time
                     },
                     Jwt = _jwt,
                 }
@@ -69,8 +73,8 @@ namespace LeaderboardBackend.Test
 
             RunViewModel retrieved = await GetRun(created.Id);
 
-            Assert.NotNull(created);
-            Assert.AreEqual(created.Id, retrieved.Id);
+            created.Should().NotBeNull();
+            created.Id.Should().Be(retrieved.Id);
         }
 
         [Test]
@@ -79,34 +83,34 @@ namespace LeaderboardBackend.Test
             RunViewModel createdRun = await CreateRun();
 
             CategoryViewModel category = await _apiClient.Get<CategoryViewModel>(
-                $"api/runs/{createdRun.Id.ToUrlSafeBase64String()}/category",
+                $"api/run/{createdRun.Id.ToUrlSafeBase64String()}/category",
                 new() { Jwt = _jwt }
             );
 
-            Assert.NotNull(category);
-            Assert.AreEqual(category.Id, _categoryId);
+            category.Should().NotBeNull();
+            category.Id.Should().Be(_categoryId);
         }
 
-        private static async Task<RunViewModel> CreateRun()
-        {
-            return await _apiClient.Post<RunViewModel>(
-                "/api/runs",
+        private static async Task<RunViewModel> CreateRun() =>
+            await _apiClient.Post<RunViewModel>(
+                "/runs/create",
                 new()
                 {
                     Body = new CreateRunRequest
                     {
                         PlayedOn = LocalDate.MinIsoValue,
-                        SubmittedAt = Instant.MaxValue,
+                        Info = null,
+                        TimeOrScore = Duration.FromHours(2).ToInt64Nanoseconds(),
                         CategoryId = _categoryId
                     },
                     Jwt = _jwt
                 }
             );
-        }
 
-        private static async Task<RunViewModel> GetRun(Guid id)
-        {
-            return await _apiClient.Get<RunViewModel>($"/api/runs/{id.ToUrlSafeBase64String()}", new() { Jwt = _jwt });
-        }
+        private static async Task<RunViewModel> GetRun(Guid id) =>
+            await _apiClient.Get<RunViewModel>(
+                $"/api/run/{id.ToUrlSafeBase64String()}",
+                new() { Jwt = _jwt }
+            );
     }
 }

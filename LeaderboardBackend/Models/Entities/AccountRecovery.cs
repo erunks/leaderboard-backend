@@ -6,7 +6,7 @@ namespace LeaderboardBackend.Models.Entities;
 /// <summary>
 ///     Represents an account recovery attempt for a `User`.
 /// </summary>
-public class AccountRecovery
+public class AccountRecovery : IHasCreationTimestamp
 {
     /// <summary>
     ///     The unique identifier of the `AccountRecovery`.<br/>
@@ -17,7 +17,6 @@ public class AccountRecovery
     /// <summary>
     ///     The ID of the `User` tied to this `AccountRecovery`.
     /// </summary>
-    [Required]
     public Guid UserId { get; set; }
 
     /// <summary>
@@ -29,7 +28,6 @@ public class AccountRecovery
     ///     The time this `AccountRecovery` was created, i.e. the time the user
     ///     requested an account recovery.
     /// </summary>
-    [Required]
     public Instant CreatedAt { get; set; }
 
     /// <summary>
@@ -42,6 +40,5 @@ public class AccountRecovery
     ///     creation.
     /// </summary>
     /// <example>john.doe@example.com</example>
-    [Required]
     public Instant ExpiresAt { get; set; }
 }

@@ -63,11 +63,12 @@ public class LoginTests : IntegrationTestsBase
         using IServiceScope s = _factory.Services.CreateScope();
         JwtConfig jwtConfig = s.ServiceProvider.GetRequiredService<IOptions<JwtConfig>>().Value;
         TokenValidationParameters parameters = Jwt.ValidationParameters.GetInstance(jwtConfig);
-
-        Jwt.SecurityTokenHandler.ValidateToken(content!.Token, parameters, out _).Should().BeOfType<ClaimsPrincipal>();
+        TokenValidationResult validationResult = await Jwt.SecurityTokenHandler.ValidateTokenAsync(content!.Token, parameters);
+        validationResult.IsValid.Should().BeTrue();
+        validationResult.ClaimsIdentity.IsAuthenticated.Should().BeTrue();
     }
 
-    [TestCase(null, null, "NotNullValidator", "NotEmptyValidator", Description = "Null email + password")]
+    [TestCase(null, null, "NotEmptyValidator", "NotEmptyValidator", Description = "Null email + password")]
     [TestCase("ee", "ff", "EmailValidator", null, Description = "Invalid email + password")]
     [TestCase("ee", "P4ssword", "EmailValidator", null, Description = "Null email + valid password")]
     public async Task Login_InvalidRequest_Returns422(

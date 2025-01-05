@@ -1,10 +1,16 @@
 using System.Net;
 using System.Threading.Tasks;
+using LeaderboardBackend.Models;
+using LeaderboardBackend.Models.Entities;
 using LeaderboardBackend.Models.Requests;
 using LeaderboardBackend.Models.ViewModels;
-using LeaderboardBackend.Test.Lib;
 using LeaderboardBackend.Test.TestApi;
 using LeaderboardBackend.Test.TestApi.Extensions;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using NodaTime;
+using NodaTime.Testing;
 using NUnit.Framework;
 
 namespace LeaderboardBackend.Test;
@@ -13,84 +19,84 @@ namespace LeaderboardBackend.Test;
 internal class Categories
 {
     private static TestApiClient _apiClient = null!;
-    private static TestApiFactory _factory = null!;
+    private static WebApplicationFactory<Program> _factory = null!;
+    private static readonly FakeClock _clock = new(new Instant());
     private static string? _jwt;
 
     [OneTimeSetUp]
     public async Task OneTimeSetUp()
     {
-        _factory = new TestApiFactory();
-        _apiClient = _factory.CreateTestApiClient();
+        _factory = new TestApiFactory().WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureTestServices(services =>
+            {
+                services.AddSingleton<IClock, FakeClock>(_ => _clock);
+            });
+        });
+        _apiClient = new TestApiClient(_factory.CreateClient());
 
-        _factory.ResetDatabase();
+        PostgresDatabaseFixture.ResetDatabaseToTemplate();
         _jwt = (await _apiClient.LoginAdminUser()).Token;
     }
 
     [OneTimeTearDown]
-    public void OneTimeTearDown()
-    {
-        _factory.Dispose();
-    }
+    public void OneTimeTearDown() => _factory.Dispose();
 
     [Test]
-    public static void GetCategory_Unauthorized()
-    {
-        RequestFailureException e = Assert.ThrowsAsync<RequestFailureException>(
-            async () => await _apiClient.Get<CategoryViewModel>($"/api/categories/1", new())
-        )!;
-
-        Assert.AreEqual(HttpStatusCode.Unauthorized, e.Response.StatusCode);
-    }
-
-    [Test]
-    public static void GetCategory_NotFound()
-    {
-        RequestFailureException e = Assert.ThrowsAsync<RequestFailureException>(
-            async () =>
-                await _apiClient.Get<CategoryViewModel>(
-                    $"/api/categories/69",
-                    new() { Jwt = _jwt }
-                )
-        )!;
-
-        Assert.AreEqual(HttpStatusCode.NotFound, e.Response.StatusCode);
-    }
+    public static async Task GetCategory_NotFound() =>
+        await _apiClient.Awaiting(
+            a => a.Get<CategoryViewModel>(
+                $"/api/cateogries/69",
+                new() { Jwt = _jwt }
+            )
+        ).Should()
+        .ThrowAsync<RequestFailureException>()
+        .Where(e => e.Response.StatusCode == HttpStatusCode.NotFound);
 
     [Test]
     public static async Task CreateCategory_GetCategory_OK()
     {
+        Instant now = Instant.FromUnixTimeSeconds(1);
+        _clock.Reset(now);
+
         LeaderboardViewModel createdLeaderboard = await _apiClient.Post<LeaderboardViewModel>(
-            "/api/leaderboards",
+            "/leaderboards/create",
             new()
             {
                 Body = new CreateLeaderboardRequest()
                 {
-                    Name = Generators.GenerateRandomString(),
-                    Slug = Generators.GenerateRandomString()
+                    Name = "Super Mario Bros.",
+                    Slug = "super_mario_bros",
                 },
                 Jwt = _jwt
             }
         );
+
+        CreateCategoryRequest request = new()
+        {
+            Name = "1 Player",
+            Slug = "1_player",
+            LeaderboardId = createdLeaderboard.Id,
+            Info = null,
+            SortDirection = SortDirection.Ascending,
+            Type = RunType.Time
+        };
 
         CategoryViewModel createdCategory = await _apiClient.Post<CategoryViewModel>(
-            "/api/categories",
+            "/categories/create",
             new()
             {
-                Body = new CreateCategoryRequest()
-                {
-                    Name = Generators.GenerateRandomString(),
-                    Slug = Generators.GenerateRandomString(),
-                    LeaderboardId = createdLeaderboard.Id
-                },
+                Body = request,
                 Jwt = _jwt
             }
         );
 
+        createdCategory.CreatedAt.Should().Be(now);
+
         CategoryViewModel retrievedCategory = await _apiClient.Get<CategoryViewModel>(
-            $"/api/categories/{createdCategory?.Id}",
-            new() { Jwt = _jwt }
+            $"/api/category/{createdCategory?.Id}", new() { }
         );
 
-        Assert.AreEqual(createdCategory, retrievedCategory);
+        retrievedCategory.Should().BeEquivalentTo(request, opts => opts.Excluding(c => c.LeaderboardId));
     }
 }

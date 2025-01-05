@@ -1,35 +1,26 @@
 using LeaderboardBackend.Authorization;
-using LeaderboardBackend.Controllers.Annotations;
 using LeaderboardBackend.Models.Entities;
 using LeaderboardBackend.Models.Requests;
+using LeaderboardBackend.Models.Validation;
 using LeaderboardBackend.Models.ViewModels;
+using LeaderboardBackend.Result;
 using LeaderboardBackend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Swashbuckle.AspNetCore.Annotations;
 
 namespace LeaderboardBackend.Controllers;
 
-public class LeaderboardsController : ApiController
+public class LeaderboardsController(ILeaderboardService leaderboardService) : ApiController
 {
-    private readonly ILeaderboardService _leaderboardService;
-
-    public LeaderboardsController(ILeaderboardService leaderboardService)
-    {
-        _leaderboardService = leaderboardService;
-    }
-
-    /// <summary>
-    ///     Gets a Leaderboard by its ID.
-    /// </summary>
-    /// <param name="id">The ID of the `Leaderboard` which should be retrieved.</param>
-    /// <response code="200">The `Leaderboard` was found and returned successfully.</response>
-    /// <response code="404">No `Leaderboard` with the requested ID or slug could be found.</response>
     [AllowAnonymous]
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.GetAnon))]
-    [HttpGet("{id:long}")]
+    [HttpGet("api/leaderboard/{id:long}")]
+    [SwaggerOperation("Gets a leaderboard by its ID.", OperationId = "getLeaderboard")]
+    [SwaggerResponse(200)]
+    [SwaggerResponse(404)]
     public async Task<ActionResult<LeaderboardViewModel>> GetLeaderboard(long id)
     {
-        Leaderboard? leaderboard = await _leaderboardService.GetLeaderboard(id);
+        Leaderboard? leaderboard = await leaderboardService.GetLeaderboard(id);
 
         if (leaderboard == null)
         {
@@ -39,18 +30,14 @@ public class LeaderboardsController : ApiController
         return Ok(LeaderboardViewModel.MapFrom(leaderboard));
     }
 
-    /// <summary>
-    ///     Gets a Leaderboard by its slug.
-    /// </summary>
-    /// <param name="slug">The slug of the `Leaderboard` which should be retrieved.</param>
-    /// <response code="200">The `Leaderboard` was found and returned successfully.</response>
-    /// <response code="404">No `Leaderboard` with the requested ID or slug could be found.</response>
     [AllowAnonymous]
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.GetAnon))]
-    [HttpGet("{slug}")]
-    public async Task<ActionResult<LeaderboardViewModel>> GetLeaderboardBySlug(string slug)
+    [HttpGet("api/leaderboard")]
+    [SwaggerOperation("Gets a leaderboard by its slug.", OperationId = "getLeaderboardBySlug")]
+    [SwaggerResponse(200)]
+    [SwaggerResponse(404)]
+    public async Task<ActionResult<LeaderboardViewModel>> GetLeaderboardBySlug([FromQuery, SwaggerParameter(Required = true)] string slug)
     {
-        Leaderboard? leaderboard = await _leaderboardService.GetLeaderboardBySlug(slug);
+        Leaderboard? leaderboard = await leaderboardService.GetLeaderboardBySlug(slug);
 
         if (leaderboard == null)
         {
@@ -60,52 +47,124 @@ public class LeaderboardsController : ApiController
         return Ok(LeaderboardViewModel.MapFrom(leaderboard));
     }
 
-    /// <summary>
-    ///     Gets Leaderboards by their IDs.
-    /// </summary>
-    /// <param name="ids">The IDs of the `Leaderboard`s which should be retrieved.</param>
-    /// <response code="200">
-    ///     The list of `Leaderboard`s was retrieved successfully. The result can be an empty
-    ///     collection.
-    /// </response>
     [AllowAnonymous]
-    [HttpGet]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<ActionResult<List<LeaderboardViewModel>>> GetLeaderboards(
-        [FromQuery] long[] ids
-    )
+    [HttpGet("api/leaderboards")]
+    [SwaggerOperation("Gets all leaderboards.", OperationId = "listLeaderboards")]
+    [SwaggerResponse(200)]
+    public async Task<ActionResult<List<LeaderboardViewModel>>> GetLeaderboards([FromQuery] bool includeDeleted = false)
     {
-        List<Leaderboard> result = await _leaderboardService.GetLeaderboards(ids);
+        // TODO: Paginate.
+
+        List<Leaderboard> result = await leaderboardService.ListLeaderboards(includeDeleted);
         return Ok(result.Select(LeaderboardViewModel.MapFrom));
     }
 
-    /// <summary>
-    ///     Creates a new Leaderboard.
-    ///     This request is restricted to Administrators.
-    /// </summary>
-    /// <param name="request">
-    ///     The `CreateLeaderboardRequest` instance from which to create the `Leaderboard`.
-    /// </param>
-    /// <response code="201">The `Leaderboard` was created and returned successfully.</response>
-    /// <response code="400">The request was malformed.</response>
-    /// <response code="404">
-    ///     The requesting `User` is unauthorized to create `Leaderboard`s.
-    /// </response>
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.Post))]
     [Authorize(Policy = UserTypes.ADMINISTRATOR)]
-    [HttpPost]
+    [HttpPost("leaderboards/create")]
+    [SwaggerOperation("Creates a new leaderboard. This request is restricted to Administrators.", OperationId = "createLeaderboard")]
+    [SwaggerResponse(201)]
+    [SwaggerResponse(401)]
+    [SwaggerResponse(403, "The requesting `User` is unauthorized to create `Leaderboard`s.")]
+    [SwaggerResponse(409, "A Leaderboard with the specified slug already exists.", typeof(ValidationProblemDetails))]
+    [SwaggerResponse(422, $"The request contains errors. The following errors can occur: NotEmptyValidator, {SlugRule.SLUG_FORMAT}", Type = typeof(ValidationProblemDetails))]
     public async Task<ActionResult<LeaderboardViewModel>> CreateLeaderboard(
-        [FromBody] CreateLeaderboardRequest request
+        [FromBody, SwaggerRequestBody(Required = true)] CreateLeaderboardRequest request
     )
     {
-        Leaderboard leaderboard = new() { Name = request.Name, Slug = request.Slug };
+        CreateLeaderboardResult r = await leaderboardService.CreateLeaderboard(request);
 
-        await _leaderboardService.CreateLeaderboard(leaderboard);
+        return r.Match<ActionResult<LeaderboardViewModel>>(
+            lb => CreatedAtAction(
+                nameof(GetLeaderboard),
+                new { id = lb.Id },
+                LeaderboardViewModel.MapFrom(lb)
+            ),
+            conflict =>
+            {
+                ModelState.AddModelError(nameof(request.Slug), "SlugAlreadyUsed");
 
-        return CreatedAtAction(
-            nameof(GetLeaderboard),
-            new { id = leaderboard.Id },
-            LeaderboardViewModel.MapFrom(leaderboard)
+                return Conflict(new ValidationProblemDetails(ModelState));
+            }
+        );
+    }
+
+    [Authorize(Policy = UserTypes.ADMINISTRATOR)]
+    [HttpPut("leaderboard/{id:long}/restore")]
+    [SwaggerOperation("Restores a deleted leaderboard.", OperationId = "restoreLeaderboard")]
+    [SwaggerResponse(200, "The restored `Leaderboard`s view model.", typeof(LeaderboardViewModel))]
+    [SwaggerResponse(401)]
+    [SwaggerResponse(403, "The requesting `User` is unauthorized to restore `Leaderboard`s.")]
+    [SwaggerResponse(404, "The `Leaderboard` was not found, or it wasn't deleted in the first place. Includes a field, `title`, which will be \"Not Found\" in the former case, and \"Not Deleted\" in the latter.", typeof(ProblemDetails))]
+    [SwaggerResponse(409, "Another `Leaderboard` with the same slug has been created since, and therefore can't be restored. Will include the conflicting board in the response.", typeof(LeaderboardViewModel))]
+    public async Task<ActionResult<LeaderboardViewModel>> RestoreLeaderboard(
+        long id
+    )
+    {
+        RestoreLeaderboardResult r = await leaderboardService.RestoreLeaderboard(id);
+
+        return r.Match<ActionResult<LeaderboardViewModel>>(
+            board => Ok(LeaderboardViewModel.MapFrom(board)),
+            notFound => NotFound(),
+            neverDeleted =>
+                NotFound(ProblemDetailsFactory.CreateProblemDetails(HttpContext, 404, "Not Deleted")),
+            conflict => Conflict(LeaderboardViewModel.MapFrom(conflict.Conflicting))
+        );
+    }
+
+    [Authorize(Policy = UserTypes.ADMINISTRATOR)]
+    [HttpDelete("leaderboard/{id:long}")]
+    [SwaggerOperation("Deletes a leaderboard. This request is restricted to Administrators.", OperationId = "deleteLeaderboard")]
+    [SwaggerResponse(204)]
+    [SwaggerResponse(401)]
+    [SwaggerResponse(403)]
+    [SwaggerResponse(
+        404,
+        """
+        The leaderboard does not exist (Not Found) or was already deleted (Already Deleted).
+        Use the title field of the response to differentiate between the two cases if necessary.
+        """,
+        typeof(ProblemDetails)
+    )]
+    public async Task<ActionResult> DeleteLeaderboard([FromRoute, SwaggerParameter(Required = true)] long id)
+    {
+        DeleteResult res = await leaderboardService.DeleteLeaderboard(id);
+
+        return res.Match<ActionResult>(
+            success => NoContent(),
+            notFound => NotFound(),
+            alreadyDeleted => NotFound(ProblemDetailsFactory.CreateProblemDetails(HttpContext, 404, "Already Deleted"))
+        );
+    }
+
+    [Authorize(Policy = UserTypes.ADMINISTRATOR)]
+    [HttpPatch("/leaderboard/{id:long}")]
+    [SwaggerOperation(
+        "Updates a leaderboard with the specified new fields. This request is restricted to administrators. " +
+        "This operation is atomic; if an error occurs, the leaderboard will not be updated. " +
+        "All fields of the request body are optional but you must specify at least one.",
+        OperationId = "updateLeaderboard"
+    )]
+    [SwaggerResponse(204)]
+    [SwaggerResponse(401)]
+    [SwaggerResponse(403)]
+    [SwaggerResponse(404, Type = typeof(ProblemDetails))]
+    [SwaggerResponse(
+        409,
+        "The specified slug is already in use by another leaderboard. Returns the conflicting leaderboard.",
+        typeof(LeaderboardViewModel)
+    )]
+    [SwaggerResponse(422, Type = typeof(ValidationProblemDetails))]
+    public async Task<ActionResult> UpdateLeaderboard(
+        [FromRoute] long id,
+        [FromBody, SwaggerRequestBody(Required = true)] UpdateLeaderboardRequest request
+    )
+    {
+        UpdateResult<Leaderboard> result = await leaderboardService.UpdateLeaderboard(id, request);
+
+        return result.Match<ActionResult>(
+            conflict => Conflict(conflict.Conflicting),
+            notfound => NotFound(),
+            success => NoContent()
         );
     }
 }

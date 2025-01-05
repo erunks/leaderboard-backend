@@ -1,7 +1,9 @@
 using System.ComponentModel.DataAnnotations;
-using System.Text.Json.Serialization;
+using System.ComponentModel.DataAnnotations.Schema;
+using LeaderboardBackend.Models.Validation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using NodaTime;
 
 namespace LeaderboardBackend.Models.Entities;
 
@@ -16,7 +18,7 @@ public enum UserRole
 /// <summary>
 ///     Represents a user account registered on the website.
 /// </summary>
-public class User
+public class User : IHasCreationTimestamp
 {
     /// <summary>
     ///     The unique identifier of the `User`.<br/>
@@ -40,15 +42,18 @@ public class User
     ///     exists.
     /// </summary>
     /// <example>J'on-Doe</example>
-    [Required]
-    public string Username { get; set; } = null!;
+    [Column(TypeName = "citext")]
+    [RegularExpression(UsernameRule.REGEX)]
+    [StringLength(25, MinimumLength = 2)]
+    public required string Username { get; set; }
 
     /// <summary>
     ///     The `User`'s email address.
     /// </summary>
     /// <example>john.doe@example.com</example>
-    [Required]
-    public string Email { get; set; } = null!;
+    [Column(TypeName = "citext")]
+    [EmailAddress]
+    public required string Email { get; set; }
 
     /// <summary>
     ///     The `User`'s password. It:
@@ -64,27 +69,17 @@ public class User
     ///     </ul>
     /// </summary>
     /// <example>P4ssword</example>
-    [JsonIgnore]
     [Required]
-    public string Password { get; set; } = null!;
+    public required string Password { get; set; }
 
     /// <summary>
     /// User role (site-wide)
     /// </summary>
-    [Required]
     public UserRole Role { get; set; } = UserRole.Registered;
 
+    public Instant CreatedAt { get; set; }
+
     public bool IsAdmin => Role == UserRole.Administrator;
-
-    public override bool Equals(object? obj)
-    {
-        return obj is User user && Id.Equals(user.Id);
-    }
-
-    public override int GetHashCode()
-    {
-        return HashCode.Combine(Id, Username, Email);
-    }
 }
 
 public class UserEntityTypeConfig : IEntityTypeConfiguration<User>
@@ -94,12 +89,6 @@ public class UserEntityTypeConfig : IEntityTypeConfiguration<User>
 
     public void Configure(EntityTypeBuilder<User> builder)
     {
-        builder.Property(x => x.Username)
-            .UseCollation(ApplicationContext.CASE_INSENSITIVE_COLLATION);
-
-        builder.Property(x => x.Email)
-            .UseCollation(ApplicationContext.CASE_INSENSITIVE_COLLATION);
-
         builder.HasIndex(x => x.Username)
             .IsUnique()
             .HasDatabaseName(USERNAME_UNIQUE_INDEX);

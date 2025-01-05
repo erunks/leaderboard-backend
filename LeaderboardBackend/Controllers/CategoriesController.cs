@@ -1,34 +1,24 @@
-using LeaderboardBackend.Controllers.Annotations;
+using LeaderboardBackend.Authorization;
 using LeaderboardBackend.Models.Entities;
 using LeaderboardBackend.Models.Requests;
 using LeaderboardBackend.Models.ViewModels;
 using LeaderboardBackend.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Swashbuckle.AspNetCore.Annotations;
 
 namespace LeaderboardBackend.Controllers;
 
-public class CategoriesController : ApiController
+public class CategoriesController(ICategoryService categoryService) : ApiController
 {
-    private readonly ICategoryService _categoryService;
-
-    public CategoriesController(ICategoryService categoryService)
-    {
-        _categoryService = categoryService;
-    }
-
-    /// <summary>
-    ///     Gets a Category by its ID.
-    /// </summary>
-    /// <param name="id">The ID of the `Category` which should be retrieved.</param>
-    /// <response code="200">The `Category` was found and returned successfully.</response>
-    /// <response code="404">No `Category` with the requested ID could be found.</response>
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.Get))]
-    [HttpGet("{id}")]
+    [AllowAnonymous]
+    [HttpGet("api/category/{id}")]
+    [SwaggerOperation("Gets a Category by its ID.", OperationId = "getCategory")]
+    [SwaggerResponse(200)]
+    [SwaggerResponse(404)]
     public async Task<ActionResult<CategoryViewModel>> GetCategory(long id)
     {
-        // NOTE: Should this use [AllowAnonymous]? - Ero
-
-        Category? category = await _categoryService.GetCategory(id);
+        Category? category = await categoryService.GetCategory(id);
 
         if (category == null)
         {
@@ -38,38 +28,28 @@ public class CategoriesController : ApiController
         return Ok(CategoryViewModel.MapFrom(category));
     }
 
-    /// <summary>
-    ///     Creates a new Category.
-    ///     This request is restricted to Moderators.
-    /// </summary>
-    /// <param name="request">
-    ///     The `CreateCategoryRequest` instance from which to create the `Category`.
-    /// </param>
-    /// <response code="201">The `Category` was created and returned successfully.</response>
-    /// <response code="400">The request was malformed.</response>
-    /// <response code="404">
-    ///     The requesting `User` is unauthorized to create a `Category`.
-    /// </response>
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.Post))]
-    [HttpPost]
+    [Authorize(Policy = UserTypes.ADMINISTRATOR)]
+    [HttpPost("categories/create")]
+    [SwaggerOperation("Creates a new Category. This request is restricted to Moderators.", OperationId = "createCategory")]
+    [SwaggerResponse(201)]
+    [SwaggerResponse(403)]
+    [SwaggerResponse(422, Type = typeof(ValidationProblemDetails))]
     public async Task<ActionResult<CategoryViewModel>> CreateCategory(
         [FromBody] CreateCategoryRequest request
     )
     {
-        // FIXME: Allow only moderators to call this! - Ero
-        // NOTE: Allow administrators to call this as well? - Ero
-
-        // NOTE: Check that body.PlayersMax > body.PlayersMin? - Ero
         Category category =
             new()
             {
                 Name = request.Name,
                 Slug = request.Slug,
-                Rules = request.Rules,
+                Info = request.Info,
                 LeaderboardId = request.LeaderboardId,
+                SortDirection = request.SortDirection,
+                Type = request.Type
             };
 
-        await _categoryService.CreateCategory(category);
+        await categoryService.CreateCategory(category);
 
         return CreatedAtAction(
             nameof(GetCategory),

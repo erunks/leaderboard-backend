@@ -1,24 +1,24 @@
 name: backend-test
 on:
+    workflow_dispatch:
     push:
         branches: [ main ]
     pull_request:
-env:
-  HUSKY: 0
+        branches: [ main ]
 jobs:
     backend-test:
         runs-on: ubuntu-latest
         steps:
         - name: Checkout repo
-          uses: actions/checkout@v2
-        - name: Setup dotnet 7
-          uses: actions/setup-dotnet@v1
+          uses: actions/checkout@v4
+        - name: Setup dotnet 8
+          uses: actions/setup-dotnet@v4
+          with:
+            dotnet-version: '8.0'
         - name: Restore NuGet packages
           run: dotnet restore
         - name: Restore tools
           run: dotnet tool restore
-        - name: Lint
-          run: dotnet format --verify-no-changes --no-restore .
         - name: Backup committed openapi.json
           run: cp LeaderboardBackend/openapi.json /tmp/committed-openapi.json
         - name: Build

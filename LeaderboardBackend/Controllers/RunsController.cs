@@ -1,42 +1,29 @@
-using LeaderboardBackend.Controllers.Annotations;
 using LeaderboardBackend.Models.Entities;
 using LeaderboardBackend.Models.Requests;
 using LeaderboardBackend.Models.ViewModels;
+using LeaderboardBackend.Result;
 using LeaderboardBackend.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using OneOf;
+using Swashbuckle.AspNetCore.Annotations;
 
 namespace LeaderboardBackend.Controllers;
 
-public class RunsController : ApiController
+public class RunsController(
+    IRunService runService,
+    ICategoryService categoryService,
+    IUserService userService
+    ) : ApiController
 {
-    private readonly IRunService _runService;
-    private readonly ICategoryService _categoryService;
-
-    public RunsController(
-        IRunService runService,
-        ICategoryService categoryService
-    )
-    {
-        _runService = runService;
-        _categoryService = categoryService;
-    }
-
-    /// <summary>
-    ///     Gets a Run by its ID.
-    /// </summary>
-    /// <param name="id">
-    ///     The ID of the `Run` which should be retrieved.<br/>
-    ///     It must be possible to parse this to `long` for this request to complete.
-    /// </param>
-    /// <response code="200">The `Run` was found and returned successfully.</response>
-    /// <response code="404">No `Run` with the requested ID could be found.</response>
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.Get))]
-    [HttpGet("{id}")]
+    [AllowAnonymous]
+    [HttpGet("api/run/{id}")]
+    [SwaggerOperation("Gets a Run by its ID.", OperationId = "getRun")]
+    [SwaggerResponse(200)]
+    [SwaggerResponse(404)]
     public async Task<ActionResult<RunViewModel>> GetRun(Guid id)
     {
-        // NOTE: Should this use [AllowAnonymous]? - Ero
-
-        Run? run = await _runService.GetRun(id);
+        Run? run = await runService.GetRun(id);
 
         if (run is null)
         {
@@ -46,45 +33,50 @@ public class RunsController : ApiController
         return Ok(RunViewModel.MapFrom(run));
     }
 
-    /// <summary>
-    ///     Creates a new Run.
-    /// </summary>
-    /// <param name="request">
-    ///     The `CreateRunRequest` instance from which to create the `Run`.
-    /// </param>
-    /// <response code="201">The `Run` was created and returned successfully.</response>
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.Post))]
-    [HttpPost]
+    [Authorize]
+    [HttpPost("runs/create")]
+    [SwaggerOperation("Creates a new Run.", OperationId = "createRun")]
+    [SwaggerResponse(201)]
+    [SwaggerResponse(401)]
+    [SwaggerResponse(403)]
+    [SwaggerResponse(422, Type = typeof(ValidationProblemDetails))]
     public async Task<ActionResult> CreateRun([FromBody] CreateRunRequest request)
     {
         // FIXME: Should return Task<ActionResult<Run>>! - Ero
         // NOTE: Return NotFound for anything in here? - Ero
 
-        Run run =
-            new()
+        GetUserResult res = await userService.GetUserFromClaims(HttpContext.User);
+
+        if (res.TryPickT0(out User user, out OneOf<BadCredentials, UserNotFound> _))
+        {
+            Run run = new()
             {
                 PlayedOn = request.PlayedOn,
-                SubmittedAt = request.SubmittedAt,
-                CategoryId = request.CategoryId
+                CategoryId = request.CategoryId,
+                User = user,
             };
 
-        await _runService.CreateRun(run);
+            await runService.CreateRun(run);
+            return CreatedAtAction(nameof(GetRun), new { id = run.Id }, RunViewModel.MapFrom(run));
+        }
 
-        return CreatedAtAction(nameof(GetRun), new { id = run.Id }, RunViewModel.MapFrom(run));
+        return Unauthorized();
     }
 
-    [ApiConventionMethod(typeof(Conventions), nameof(Conventions.Get))]
-    [HttpGet("{id}/category")]
+    [HttpGet("/api/run/{id}/category")]
+    [SwaggerOperation("Gets the category a run belongs to.", OperationId = "getRunCategory")]
+    [SwaggerResponse(200)]
+    [SwaggerResponse(404)]
     public async Task<ActionResult<CategoryViewModel>> GetCategoryForRun(Guid id)
     {
-        Run? run = await _runService.GetRun(id);
+        Run? run = await runService.GetRun(id);
 
         if (run is null)
         {
             return NotFound("Run not found");
         }
 
-        Category? category = await _categoryService.GetCategoryForRun(run);
+        Category? category = await categoryService.GetCategoryForRun(run);
 
         if (category is null)
         {

@@ -10,6 +10,7 @@ using LeaderboardBackend.Models.Requests;
 using LeaderboardBackend.Models.ViewModels;
 using LeaderboardBackend.Services;
 using LeaderboardBackend.Test.Fixtures;
+using LeaderboardBackend.Test.Lib;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
@@ -31,27 +32,33 @@ public class RegistrationTests : IntegrationTestsBase
     public async Task Register_ValidRequest_CreatesAndReturnsUser()
     {
         Mock<IEmailSender> emailSenderMock = new();
+        Instant now = Instant.FromUnixTimeSeconds(1);
+
         using HttpClient client = _factory.WithWebHostBuilder(builder =>
         {
             builder.ConfigureTestServices(services =>
             {
                 services.AddScoped(_ => emailSenderMock.Object);
-                services.AddSingleton<IClock, FakeClock>(_ => new(Instant.FromUnixTimeSeconds(1)));
+                services.AddSingleton<IClock, FakeClock>(_ => new(now));
             });
         })
         .CreateClient();
+
         RegisterRequest request = _registerReqFaker.Generate();
 
         HttpResponseMessage res = await client.PostAsJsonAsync(Routes.REGISTER, request);
 
         res.Should().HaveStatusCode(HttpStatusCode.Created);
-        UserViewModel? content = await res.Content.ReadFromJsonAsync<UserViewModel>();
-        content.Should().NotBeNull().And.BeEquivalentTo(new UserViewModel
+        UserViewModel? content = await res.Content.ReadFromJsonAsync<UserViewModel>(TestInitCommonFields.JsonSerializerOptions);
+
+        content.Should().NotBeNull().And.Be(new UserViewModel
         {
             Id = content!.Id,
             Username = request.Username,
-            Role = UserRole.Registered
+            Role = UserRole.Registered,
+            CreatedAt = now
         });
+
         emailSenderMock.Verify(x =>
             x.EnqueueEmailAsync(
                 It.IsAny<string>(),
@@ -64,14 +71,17 @@ public class RegistrationTests : IntegrationTestsBase
         using IServiceScope scope = _factory.Services.CreateScope();
         using ApplicationContext dbContext = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
         User? createdUser = dbContext.Users.FirstOrDefault(u => u.Id == content.Id);
+
         createdUser.Should().NotBeNull().And.BeEquivalentTo(new User
         {
             Id = content!.Id,
             Password = createdUser!.Password,
             Username = request.Username,
             Email = request.Email,
-            Role = UserRole.Registered
+            Role = UserRole.Registered,
+            CreatedAt = now
         });
+
         AccountConfirmation confirmation = dbContext.AccountConfirmations.First(c => c.UserId == createdUser.Id);
         confirmation.Should().NotBeNull();
         confirmation.CreatedAt.ToUnixTimeSeconds().Should().Be(1);
@@ -150,9 +160,20 @@ public class RegistrationTests : IntegrationTestsBase
     [Test]
     public async Task Register_UsernameAlreadyTaken_ReturnsConflictAndErrorCode()
     {
-        RegisterRequest createExistingUserReq = _registerReqFaker.Generate();
+        RegisterRequest createExistingUserReq = new()
+        {
+            Email = "toddparker@example.com",
+            Password = "MyPassword1",
+            Username = "Todd"
+        };
+
         await Client.PostAsJsonAsync(Routes.REGISTER, createExistingUserReq);
-        RegisterRequest request = _registerReqFaker.Generate() with { Username = createExistingUserReq.Username.ToLower() };
+        RegisterRequest request = new()
+        {
+            Email = "toddjones@example.com",
+            Password = "MyPassword2",
+            Username = "todd"
+        };
 
         HttpResponseMessage res = await Client.PostAsJsonAsync(Routes.REGISTER, request);
 
